@@ -1,0 +1,15 @@
+// Sample packet
+
+/* Initial request */
+packet ChatRequest {
+  // friend list
+  vector<string> friends;
+  string name;
+  unsigned int age;
+}
+
+packet ChatResponse {
+  int status;
+  string name;
+  map<string, vector<int> > stuff;
+}
