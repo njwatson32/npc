@@ -1,4 +1,4 @@
-// Sample packet
+/* Sample packet */
 
 /* Initial request */
 packet ChatRequest {

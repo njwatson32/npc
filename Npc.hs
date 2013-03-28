@@ -72,7 +72,7 @@ ccType t = "const " ++ show t ++ " &"
 getter :: Field -> Bool -> CppWriter
 getter (Field t n) const = do
   tell "  "
-  tell (ccType t)
+  tell (if const then ccType t else show t ++ " &")
   tell (init n)
   tell "() "
   when const (tell "const ")
@@ -163,15 +163,44 @@ packetClass :: [String]
 packetClass = [
   "class Packet {",
   "protected:",
-  "  PacketType type;\n",
+  "  PacketType type;",
+  "  Packet(PacketType t) : type(t) { }\n",
   "public:",
-  "  Packet(PacketType t) : type(t) { }",
   "  PacketType GetPacketType() const { return type; }",
   "  virtual unsigned int SerializedSize() const { return sizeof(PacketType); }",
   "  virtual void Serialize(ByteBuffer &b) const { b.SerializeInt(static_cast<int>(type)); }",
-  "  virtual void Deserialize(ByteBuffer &b) { type = static_cast<PacketType>(b.DeserializeInt()); }",
+  "  virtual void Deserialize(ByteBuffer &b) { }",
+  "  static Packet DeserializePacket(ByteBuffer &b, bool *err);",
   "};\n"
   ]
+              
+writePacketCase :: Bool -> Packet -> CppWriter
+writePacketCase b (Packet n _) = do
+  if b then tell "  if (type == " else tell "  else if (type == "
+  tell (constantCase n)
+  tellLn ") {"
+  tellLn ("    " ++ n ++ " packet;")
+  tellLn "    packet.Deserialize(b);"
+  tellLn "    return packet;"
+  tellLn "  }"
+              
+writePacketImpl :: [String] -> [Packet] -> CppWriter
+writePacketImpl fnames ps = do
+  tellLn (autoComment "packet.cpp")
+  tellLn "#include \"packet.h\""
+  tellLn "#include \"bytebuffer.h\""
+  forM_ fnames (\fn -> tellLn ("#include \"" ++ fn ++ ".h\""))
+  tellLn "\nPacket Packet::DeserializePacket(ByteBuffer &b, bool *err) {"
+  tellLn "  PacketType type = static_cast<PacketType>(b.DeserializeInt());"
+  tellLn "  *err = false;"
+  case ps of
+    [] -> return ()
+    (p:ps) -> do
+      writePacketCase True p
+      forM_ ps (writePacketCase False)
+  tellLn "  *err = true;"
+  tellLn "  return Packet(static_cast<PacketType>(-1));"
+  tellLn "}"  
               
 -- | Writes the main header file, including the Packet class and enum of
 --   packet types
@@ -180,6 +209,7 @@ writeMainHeader ps = do
   tellLn (autoComment "packet.h")
   tellLn "#ifndef __PACKET_HEADER__"
   tellLn "#define __PACKET_HEADER__\n"
+  tellLn "#include \"bytebuffer.h\"\n"
   tellLn "enum PacketType {"
   forM_ ps (\p -> do
                tell "  "
@@ -423,7 +453,7 @@ processArgs args
     return Nothing
   | otherwise = return (Just (elem "--main" args, delete "--main" args))
 
--- | Generates all the file
+-- | Generates all the files
 npc :: [FilePath] -> Bool -> IO ()
 npc packetFiles mainH = do
   results <- sequence (map parsePackets packetFiles)
@@ -434,6 +464,10 @@ npc packetFiles mainH = do
       when mainH $ do
         writeFile "packet.h" $ execWriter (writeMainHeader (concat packets))
         putStrLn "Created packet.h"
+        writeFile "packet.cpp" $
+          execWriter (writePacketImpl (map dropExtension packetFiles)
+                      (concat packets))
+        putStrLn "Created packet.cpp"
       forM_ (zip packetFiles packets)
         (\(name,ps) -> do
             base <- return (dropExtension name)
