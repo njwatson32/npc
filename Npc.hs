@@ -119,7 +119,7 @@ makeCtor n fds = do
 writeCtors :: Packet -> CppWriter
 writeCtors (Packet n fds) = do
   tellLn ("  " ++ n ++ "() : Packet(" ++ constantCase n ++ ") { }")
-  tell "  " >> makeCtor n fds
+  when (not (null fds)) $ tell "  " >> makeCtor n fds
   lnBreak
 
 -- | Writes the class that appears in the .h file
