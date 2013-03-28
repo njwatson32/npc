@@ -169,8 +169,9 @@ packetClass = [
   "  PacketType GetPacketType() const { return type; }",
   "  virtual unsigned int SerializedSize() const { return sizeof(PacketType); }",
   "  virtual void Serialize(ByteBuffer &b) const { b.SerializeInt(static_cast<int>(type)); }",
-  "  virtual void Deserialize(ByteBuffer &b) { }",
-  "  static Packet DeserializePacket(ByteBuffer &b, bool *err);",
+  "  virtual void Deserialize(ByteBuffer &b) { }\n",
+  "  // Returned packet must be deleted",
+  "  static Packet *DeserializePacket(ByteBuffer &b, bool *err);",
   "};\n"
   ]
               
@@ -179,8 +180,9 @@ writePacketCase b (Packet n _) = do
   if b then tell "  if (type == " else tell "  else if (type == "
   tell (constantCase n)
   tellLn ") {"
-  tellLn ("    " ++ n ++ " packet;")
-  tellLn "    packet.Deserialize(b);"
+  tellLn ("    " ++ n ++ " *packet = new " ++ n ++ "();")
+  tellLn "    packet->type = type;"
+  tellLn "    packet->Deserialize(b);"
   tellLn "    return packet;"
   tellLn "  }"
               
@@ -190,7 +192,7 @@ writePacketImpl fnames ps = do
   tellLn "#include \"packet.h\""
   tellLn "#include \"bytebuffer.h\""
   forM_ fnames (\fn -> tellLn ("#include \"" ++ fn ++ ".h\""))
-  tellLn "\nPacket Packet::DeserializePacket(ByteBuffer &b, bool *err) {"
+  tellLn "\nPacket *Packet::DeserializePacket(ByteBuffer &b, bool *err) {"
   tellLn "  PacketType type = static_cast<PacketType>(b.DeserializeInt());"
   tellLn "  *err = false;"
   case ps of
@@ -199,7 +201,7 @@ writePacketImpl fnames ps = do
       writePacketCase True p
       forM_ ps (writePacketCase False)
   tellLn "  *err = true;"
-  tellLn "  return Packet(static_cast<PacketType>(-1));"
+  tellLn "  return new Packet(static_cast<PacketType>(-1));"
   tellLn "}"  
               
 -- | Writes the main header file, including the Packet class and enum of
