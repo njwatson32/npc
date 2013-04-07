@@ -6,6 +6,7 @@ packet ChatRequest {
   vector<string> friends;
   string name;
   unsigned int age;
+  Ipv4 addr;
 }
 
 packet ChatResponse {

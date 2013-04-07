@@ -7,10 +7,13 @@ module PacketParser (
   packetName,
   isPrim,
   wsTemp,
-  parsePackets
+  parsePackets,
+  parseIncludes
   ) where
 
 import Control.Monad
+import Data.Map (Map)
+import qualified Data.Map as M
 import Data.Maybe (catMaybes)
 import Text.ParserCombinators.Parsec
 
@@ -187,3 +190,25 @@ _packet file = do
   case res of
     Left error -> print error
     Right packets -> print packets
+    
+headerP :: Parser FilePath
+headerP = many1 (alphaNum <|> char '_' <|> char '.' <|> char '-')
+
+includeP :: Parser (String, FilePath)
+includeP = do
+  ctype <- nameP
+  spaces
+  char ':'
+  spaces
+  hname <- headerP
+  spaces
+  char ';'
+  spaces
+  return (ctype, hname)
+  
+includesP :: Parser (Map String FilePath)
+includesP = liftM M.fromList (many includeP)
+    
+-- | Parses an inclusions file
+parseIncludes :: FilePath -> IO (Either ParseError (Map String FilePath))
+parseIncludes = parseFromFile includesP

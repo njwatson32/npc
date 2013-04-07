@@ -2,9 +2,15 @@
 {-# LANGUAGE FlexibleContexts #-}
 
 import Control.Monad
-import Control.Monad.Writer
+import Control.Monad.Writer hiding (All)
 import Data.Char
 import Data.List
+import Data.Map (Map)
+import qualified Data.Map as M
+import Data.Maybe (mapMaybe)
+import Data.Set (Set)
+import qualified Data.Set as S
+import System.Console.GetOpt
 import System.Directory
 import System.Environment (getArgs)
 import System.Exit
@@ -33,23 +39,19 @@ capitalize :: String -> String
 capitalize "" = ""
 capitalize (c:cs) = toUpper c : cs
 
--- | Pairwise ors 3-tuples
-or3 :: (Bool, Bool, Bool) -> (Bool, Bool, Bool) -> (Bool, Bool, Bool)
-or3 (a1,a2,a3) (b1,b2,b3) = (a1 || b1, a2 || b2, a3 || b3)
+-- | Determines what files need to be included for a type
+has :: Map String FilePath -> CType -> Set String
+has _ CString = S.singleton "<string>"
+has m (Vector t) = S.insert "<vector>" (has m t)
+has m (Map k v) = S.insert "<map>" (S.union (has m k) (has m v))
+has m (User t) = S.singleton ('\"' : m M.! t ++ "\"")
+has _ (Prim _) = S.empty
 
--- | Sees whether a type has any (maps, strings, vectors)
-has :: CType -> (Bool, Bool, Bool)
-has CString = (False, True, False)
-has (Vector t) = or3 (False, False, True) (has t)
-has (Map k v) = or3 (True, False, False) (or3 (has k) (has v))
-has _ = (False, False, False)
-    
--- | Sees whether a group of packets needs to include (map, string, vector)
-includes :: [Packet] -> (Bool, Bool, Bool)
-includes = foldl (\inc (Packet _ fs) -> or3 inc $
-                   (foldl (\inc2 (Field t _) ->
-                            or3 inc2 (has t)) (False, False, False) fs))
-           (False, False, False)
+-- | Determines what files need to be included for a set of packets
+includes :: Map String FilePath -> [Packet] -> Set String
+includes m = foldl (\inc (Packet _ fs) -> S.union inc $
+                      (foldl (\inc2 (Field t _) ->
+                               S.union inc2 (has m t)) S.empty fs)) S.empty
 
 -- | Takes the name of a class and converts it to CONSTANT_CASE
 constantCase :: String -> String
@@ -67,6 +69,11 @@ ccType (Prim t) = t ++ " "
 ccType t = "const " ++ show t ++ " &"
 
 {---------- Class Definitions (.h) ----------}
+
+-- | Writes the header inclusions
+writeIncludes :: Map String FilePath -> [Packet] -> CppWriter
+writeIncludes m ps =
+  forM_ (S.toList (includes m ps)) (\f -> tellLn ("#include " ++ f))
 
 -- | Writes a field's getter, optionally making it const
 getter :: Field -> Bool -> CppWriter
@@ -141,22 +148,19 @@ writeClass p@(Packet n fds) = do
   tellLn "};\n"
   
 -- | Writes the header file for a group of packets
-writePacketHeader :: String -> [Packet] -> CppWriter
-writePacketHeader hdr ps = do
+writePacketHeader :: String -> [Packet] -> Map String FilePath -> CppWriter
+writePacketHeader hdr ps incs = do
   tellLn $ autoComment (hdr ++ ".h")
   tellLn ("#ifndef " ++ guard)
   tellLn ("#define " ++ guard)
   lnBreak
-  when incMap (tellLn "#include <map>")
-  when incStr (tellLn "#include <string>")
-  when incVec (tellLn "#include <vector>")
+  writeIncludes incs ps
   tellLn "#include \"bytebuffer.h\""
   tellLn "#include \"packet.h\"\n"
   mapM_ writeClass ps
   tell ("#endif // " ++ guard)
   where
     guard = "__" ++ constantCase hdr ++ "_HEADER__"
-    (incMap, incStr, incVec) = includes ps
 
 -- | The constant Packet class
 packetClass :: [String]
@@ -171,10 +175,11 @@ packetClass = [
   "  virtual void Serialize(ByteBuffer &b) const { b.SerializeInt(static_cast<int>(type)); }",
   "  virtual void Deserialize(ByteBuffer &b) { }\n",
   "  // Returned packet must be deleted",
-  "  static Packet *DeserializePacket(ByteBuffer &b, bool *err);",
+  "  static Packet *DeserializePacket(ByteBuffer &b);",
   "};\n"
   ]
               
+-- | Write a deserialize case for a packet
 writePacketCase :: Bool -> Packet -> CppWriter
 writePacketCase b (Packet n _) = do
   if b then tell "  if (type == " else tell "  else if (type == "
@@ -186,22 +191,21 @@ writePacketCase b (Packet n _) = do
   tellLn "    return packet;"
   tellLn "  }"
               
+-- | Writes the packet.cpp file
 writePacketImpl :: [String] -> [Packet] -> CppWriter
 writePacketImpl fnames ps = do
   tellLn (autoComment "packet.cpp")
   tellLn "#include \"packet.h\""
   tellLn "#include \"bytebuffer.h\""
   forM_ fnames (\fn -> tellLn ("#include \"" ++ fn ++ ".h\""))
-  tellLn "\nPacket *Packet::DeserializePacket(ByteBuffer &b, bool *err) {"
+  tellLn "\nPacket *Packet::DeserializePacket(ByteBuffer &b) {"
   tellLn "  PacketType type = static_cast<PacketType>(b.DeserializeInt());"
-  tellLn "  *err = false;"
   case ps of
     [] -> return ()
     (p:ps) -> do
       writePacketCase True p
       forM_ ps (writePacketCase False)
-  tellLn "  *err = true;"
-  tellLn "  return new Packet(static_cast<PacketType>(-1));"
+  tellLn "  return NULL;"
   tellLn "}"  
               
 -- | Writes the main header file, including the Packet class and enum of
@@ -222,21 +226,6 @@ writeMainHeader ps = do
   tell "#endif // __PACKET_HEADER__"
   
 {---------- Serialization Methods (.cpp) ----------}
-  
-{-
--- | The code to find the size of a serialized vector
-serSizeVector' :: CType -> String -> String -> CppWriter
-serSizeVector' (Prim t) n ws = do
-  tell ws
-  tellLn "__size += sizeof(unsigned int);"
-  tell ws
-  tell $ "__size += " ++ n ++ ".size() * sizeof(" ++ t ++ ");"
-serSizeVector' t n ws = do
-  tell ws
-  tellLn "__size += sizeof(unsigned int);"
-  tell ws
-  tell "for (std::vector<"
--}
       
 -- | The code to find the size of a serialized vector
 serSizeVector :: CType -> String -> String -> String
@@ -408,12 +397,10 @@ writeDeserialize (Packet n fds) = do
   tellLn "}\n"
 
 -- | The code to write the .cpp file for a group of packets
-writeCppFile :: String -> [Packet] -> CppWriter
-writeCppFile name ps = do
+writeCppFile :: String -> [Packet] -> Map String FilePath -> CppWriter
+writeCppFile name ps incs = do
   tellLn $ autoComment (name ++ ".cpp")
-  when incMap (tellLn "#include <map>")
-  when incStr (tellLn "#include <string>")
-  when incVec (tellLn "#include <vector>")
+  writeIncludes incs ps
   tellLn "#include \"bytebuffer.h\""
   tellLn "#include \"packet.h\""
   tellLn ("#include \"" ++ name ++ ".h\"\n")
@@ -422,16 +409,8 @@ writeCppFile name ps = do
                writeSerialize p
                writeDeserialize p
            )
-  where (incMap, incStr, incVec) = includes ps
     
 {---------- Main IO ----------}
-    
--- | Gets the files whose extension is .packet
-getFiles :: IO [FilePath]
-getFiles = do
-  cd <- getCurrentDirectory
-  files <- getDirectoryContents cd
-  return (filter (\f -> takeExtension f == ".packet") files)
   
 -- | Prints usage instructions
 printUsage :: IO ()
@@ -439,55 +418,88 @@ printUsage = do
   putStrLn "Nick's Packet Compiler"
   putStrLn "Auto-generates C++ code for packet classes given fields. There are" 
   putStrLn "two possible invocations:\n"
-  putStrLn "npc [--main] [packet1] [packet2] ..."
-  putStrLn "npc --all\n"
+  putStrLn "npc [--inc=FILE] packet1 [packet2] ..."
+  putStrLn "npc [--inc=FILE] --all\n"
   putStrLn "The first invocation will create .h and .cpp files for each packet" 
-  putStrLn "file specified. Providing the --main flag will also create or"
-  putStrLn "refresh packet.h with the updated enum of packet types provided.\n"
-  putStrLn "The second invocation is equivalent to invoking 'npc --main' with"
+  putStrLn "file specified."
+  putStrLn "The second invocation is equivalent to invoking 'npc' with"
   putStrLn "every .packet file in the current directory."
+  putStrLn "The inc option is used to specify the file of inclusions for"
+  putStrLn "user-defined classes."
   
--- | Processes the flags
-processArgs :: [String] -> IO (Maybe (Bool, [FilePath]))
-processArgs args
-  | elem "--all" args = do
-    when (length args /= 1) (printUsage >> exitFailure)
-    return Nothing
-  | otherwise = return (Just (elem "--main" args, delete "--main" args))
+data Flag =
+    All
+  | Includes (Maybe String)
+  deriving (Eq, Show)
+           
+getInc' :: Flag -> Maybe String
+getInc' All = Nothing
+getInc' (Includes s) = s
+
+getInc :: [Flag] -> String
+getInc flgs = case mapMaybe getInc' flgs of
+  []    -> ""
+  (f:_) -> f
+    
+options :: [OptDescr Flag]
+options = [
+  Option ['a'] ["all"] (NoArg All) "compile all packets in directory",
+  Option ['i'] ["inc"] (OptArg Includes "FILE") "mappings of classes to header files"
+  ]
+          
+-- | Gets the files whose extension is .packet
+getFiles :: IO [FilePath]
+getFiles = do
+  cd <- getCurrentDirectory
+  files <- getDirectoryContents cd
+  return (filter (\f -> takeExtension f == ".packet") files)
+
+-- | Writes all the packet files
+npc' :: [FilePath] -> [[Packet]] -> Map String FilePath -> IO ()
+npc' packetFiles packets incs = do
+  forM_ (zip packetFiles packets)
+        (\(name,ps) -> do
+            base <- return (dropExtension name)
+            writeFile (base ++ ".h") $
+              execWriter (writePacketHeader base ps incs)
+            putStrLn ("Created " ++ base ++ ".h")
+            writeFile (base ++ ".cpp") $ execWriter (writeCppFile base ps incs)
+            putStrLn ("Created " ++ base ++ ".cpp")
+        )
 
 -- | Generates all the files
-npc :: [FilePath] -> Bool -> IO ()
-npc packetFiles mainH = do
+npc :: [FilePath] -> [Flag] -> IO ()
+npc packetFiles flgs = do
   results <- sequence (map parsePackets packetFiles)
   case sequence results of
     Left err -> print err
     -- packets :: [[Packet]]
     Right packets -> do
-      when mainH $ do
-        writeFile "packet.h" $ execWriter (writeMainHeader (concat packets))
-        putStrLn "Created packet.h"
-        writeFile "packet.cpp" $
-          execWriter (writePacketImpl (map dropExtension packetFiles)
-                      (concat packets))
-        putStrLn "Created packet.cpp"
-      forM_ (zip packetFiles packets)
-        (\(name,ps) -> do
-            base <- return (dropExtension name)
-            writeFile (base ++ ".h") $ execWriter (writePacketHeader base ps)
-            putStrLn ("Created " ++ base ++ ".h")
-            writeFile (base ++ ".cpp") $ execWriter (writeCppFile base ps)
-            putStrLn ("Created " ++ base ++ ".cpp")
-        )
+      writeFile "packet.h" $ execWriter (writeMainHeader (concat packets))
+      putStrLn "Created packet.h"
+      writeFile "packet.cpp" $
+        execWriter (writePacketImpl (map dropExtension packetFiles)
+                    (concat packets))
+      putStrLn "Created packet.cpp"
+      -- Parse the inclusions file
+      incFile <- return (getInc flgs)
+      incs' <- if null incFile then (return (Right M.empty))
+               else parseIncludes incFile
+      case incs' of
+        Left err -> print err
+        Right incs -> npc' packetFiles packets incs
+      
 
 -- | Reads the input and generates the packet files
 main :: IO ()
 main = do
-  args <- getArgs
-  when (null args) (printUsage >> exitSuccess)
-  argRes <- processArgs args
-  case argRes of
-    Nothing -> do
-      packetFiles <- getFiles
-      npc packetFiles True
-    Just (mainH, packetFiles) -> npc packetFiles mainH
+  argv <- getArgs
+  when (null argv) (printUsage >> exitSuccess)
+  case getOpt Permute options argv of
+    (flgs,fs,[]) -> do
+      packetFiles <- if elem All flgs then getFiles else return fs
+      when (null packetFiles) (printUsage >> exitFailure)
+      npc packetFiles flgs
+    (_,_,errs) -> ioError (userError (concat errs ++ usageInfo info options))
+  where info = "Usage: npc [OPTION...] files..."
       
