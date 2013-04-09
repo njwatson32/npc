@@ -31,6 +31,7 @@ data CType =
   | Prim String
   | User String
   | Vector CType
+  | List CType
   | Map CType CType
 
 data Field = Field CType String
@@ -41,6 +42,7 @@ instance Show CType where
   show (Prim s) = s
   show (User s) = s
   show (Vector t) = "std::vector<" ++ show t ++ wsTemp t ++ ">"
+  show (List t) = "std::list<" ++ show t ++ wsTemp t ++ ">"
   show (Map t1 t2) = "std::map<" ++ show t1 ++ ", " ++ show t2 ++
                      wsTemp t2 ++ ">"
 
@@ -56,6 +58,7 @@ isPrim _ = False
 
 wsTemp :: CType -> String
 wsTemp (Vector _) = " "
+wsTemp (List _) = " "
 wsTemp (Map _ _) = " "
 wsTemp _ = ""
 
@@ -65,16 +68,16 @@ skip = liftM (const ())
 spaces1 :: Parser ()
 spaces1 = skip (many1 space)
 
-vectorP :: Parser CType
-vectorP = do
-  string "vector"
+listP :: String -> Parser CType
+listP c = do
+  string c
   spaces
   char '<'
   spaces
   t <- typeP
   spaces
   char '>'
-  return (Vector t)
+  return (if c == "list" then List t else Vector t)  
   
 mapP :: Parser CType
 mapP = do
@@ -129,7 +132,8 @@ nameP = do
   return (first : rest)
 
 typeP :: Parser CType
-typeP = try vectorP <|> try mapP <|> try primitiveP <|> try stringP <|> userP
+typeP = try (listP "vector") <|> try (listP "list") <|> try mapP <|>
+        try primitiveP <|> try stringP <|> userP
   where
     stringP = string "string" >> return CString
     userP = liftM User nameP

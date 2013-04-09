@@ -43,6 +43,7 @@ capitalize (c:cs) = toUpper c : cs
 has :: Map String FilePath -> CType -> Set String
 has _ CString = S.singleton "<string>"
 has m (Vector t) = S.insert "<vector>" (has m t)
+has m (List t) = S.insert "<list>" (has m t)
 has m (Map k v) = S.insert "<map>" (S.union (has m k) (has m v))
 has m (User t) = S.singleton ('\"' : m M.! t ++ "\"")
 has _ (Prim _) = S.empty
@@ -236,15 +237,15 @@ writeMainHeader ps = do
 {---------- Serialization Methods (.cpp) ----------}
       
 -- | The code to find the size of a serialized vector
-serSizeVector :: CType -> String -> String -> String
-serSizeVector (Prim t) n ws =
+serSizeList :: String -> CType -> String -> String -> String
+serSizeList _ (Prim t) n ws =
   ws ++ "__size += sizeof(unsigned int);\n" ++
   ws ++ "__size += " ++ n ++ ".size() * sizeof(" ++ t ++ ");"
-serSizeVector t n ws =
+serSizeList c t n ws =
   ws ++ "__size += sizeof(unsigned int);\n" ++
-  ws ++ "for (std::vector<" ++ show t ++ wsTemp t ++ ">::const_iterator " ++
-  it ++ " = " ++ n ++ ".begin(); " ++ it ++ " != " ++ n ++ ".end(); " ++
-  "++" ++ it ++ ") {\n" ++
+  ws ++ "for (std::" ++ c ++ "<" ++ show t ++ wsTemp t ++
+  ">::const_iterator " ++ it ++ " = " ++ n ++ ".begin(); " ++ it ++ " != " ++
+  n ++ ".end(); " ++ "++" ++ it ++ ") {\n" ++
   ws2 ++ ccType t ++ tmp ++ " = *" ++ it ++ ";\n" ++
   serializedSize (Field t tmp) ws2 ++ "\n" ++ ws ++ "}"
   where
@@ -287,14 +288,13 @@ serMethod d s = "b." ++ m ++ concat (map capitalize (words t))
     m = if d then "Deserialize" else "Serialize"
 
 -- | The code to serialize a vector
-serVector :: CType -> String -> String -> String
-serVector t n ws =
+serList :: String -> CType -> String -> String -> String
+serList c t n ws =
   ws ++ "b.SerializeInt(" ++ n ++ ".size());\n" ++
-  ws ++ "for (std::vector<" ++ show t ++ wsTemp t ++ ">::const_iterator " ++
-  it ++ " = " ++ n ++ ".begin(); " ++ it ++ " != " ++ n ++
-  ".end(); ++" ++ it ++ ") {\n" ++
-  ws2 ++ ccType t ++ tmp ++ " = *" ++ it ++ ";\n" ++
-  serialize (Field t tmp) ws2 ++ "\n" ++ ws ++ "}"
+  ws ++ "for (std::" ++ c ++ "<" ++ show t ++ wsTemp t ++
+  ">::const_iterator " ++ it ++ " = " ++ n ++ ".begin(); " ++ it ++ " != " ++
+  n ++ ".end(); ++" ++ it ++ ") {\n" ++ ws2 ++ ccType t ++ tmp ++ " = *" ++
+  it ++ ";\n" ++ serialize (Field t tmp) ws2 ++ "\n" ++ ws ++ "}"
   where
     ws2 = ' ' : ' ' : ws
     it = n ++ "it"
@@ -318,8 +318,8 @@ serMap k v n ws =
     tmpv = "tmpv_" ++ n
         
 -- | The code to deserialize a vector
-deserVector :: CType -> String -> String -> String
-deserVector t n ws =
+deserList :: CType -> String -> String -> String
+deserList t n ws =
   ws ++ "unsigned int " ++ size ++ " = b.DeserializeInt();\n" ++
   ws ++ "for (unsigned int " ++ i ++ " = 0; " ++ i ++ " < " ++
   size ++ "; ++" ++ i ++ ") {\n" ++
@@ -356,7 +356,8 @@ serializedSize (Field CString n) ws = ws ++ "__size += " ++ n ++ ".size() + 1;"
 serializedSize (Field (User _) n) ws = ws ++ "__size += " ++ n ++
                                        ".SerializedSize();"
 serializedSize (Field (Prim t) _) ws = ws ++ "__size += sizeof(" ++ t ++ ");"
-serializedSize (Field (Vector t) n) ws = serSizeVector t n ws
+serializedSize (Field (Vector t) n) ws = serSizeList "vector" t n ws
+serializedSize (Field (List t) n) ws = serSizeList "list" t n ws
 serializedSize (Field (Map k v) n) ws = serSizeMap k v n ws
 
 -- | The code to serialize a field
@@ -366,7 +367,8 @@ serialize (Field CString n) ws = ws ++ serMethod False "string" ++
 serialize (Field (User _) n) ws = ws ++ n ++ ".Serialize(b);"
 serialize (Field (Prim t) n) ws = ws ++ serMethod False t ++
                                    '(' : n ++ ");"
-serialize (Field (Vector t) n) ws = serVector t n ws
+serialize (Field (Vector t) n) ws = serList "vector" t n ws
+serialize (Field (List t) n) ws = serList "list" t n ws
 serialize (Field (Map k v) n) ws = serMap k v n ws
 
 -- | The code to deserialize a field
@@ -376,7 +378,8 @@ deserialize (Field CString n) ws = ws ++ n ++ " = " ++
 deserialize (Field (User _) n) ws = ws ++ n ++ ".Deserialize(b);"
 deserialize (Field (Prim t) n) ws = ws ++ n ++ " = " ++
                                      serMethod True t ++ "();"
-deserialize (Field (Vector t) n) ws = deserVector t n ws
+deserialize (Field (Vector t) n) ws = deserList t n ws
+deserialize (Field (List t) n) ws = deserList t n ws
 deserialize (Field (Map k v) n) ws = deserMap k v n ws
 
 -- | The code to get the size of a serialized packet
