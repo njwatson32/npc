@@ -3,15 +3,17 @@
 /* Initial request */
 packet ChatRequest {
   // friend list
-  vector<string> friends;
+  vector<string> friends; //foo
   string name;
   unsigned int age;
   //Ipv4 addr;
   list<long double> stuff;
+  time_t timestamp;
 }
 
 packet ChatResponse {
-  int status;
+  short status;
   string name;
   map<string, vector<int> > stuff;
+  size_t size;
 }

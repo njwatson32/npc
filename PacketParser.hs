@@ -122,8 +122,11 @@ unsignedP = do
   t <- numTypeP True <?> "Illegal use of unsigned"
   return (Prim ("unsigned " ++ t))
   
+typedefP :: Parser CType
+typedefP = liftM Prim (string "time_t" <|> string "size_t")
+  
 primitiveP :: Parser CType
-primitiveP = unsignedP <|> liftM Prim (numTypeP False)
+primitiveP = try typedefP <|> unsignedP <|> liftM Prim (numTypeP False)
 
 nameP :: Parser String
 nameP = do
@@ -138,7 +141,7 @@ typeP = try (listP "vector") <|> try (listP "list") <|> try mapP <|>
     stringP = string "string" >> return CString
     userP = liftM User nameP
   
-commentP :: Parser (Maybe Field)
+commentP :: Parser (Maybe a)
 commentP = do
   string "//"
   many (noneOf "\n")
@@ -198,7 +201,7 @@ _packet file = do
 headerP :: Parser FilePath
 headerP = many1 (alphaNum <|> char '_' <|> char '.' <|> char '-')
 
-includeP :: Parser (String, FilePath)
+includeP :: Parser (Maybe (String, FilePath))
 includeP = do
   ctype <- nameP
   spaces
@@ -208,10 +211,10 @@ includeP = do
   spaces
   char ';'
   spaces
-  return (ctype, hname)
+  return $ Just (ctype, hname)
   
 includesP :: Parser (Map String FilePath)
-includesP = liftM M.fromList (many includeP)
+includesP = liftM (M.fromList . catMaybes) $ many (commentP <|> includeP)
     
 -- | Parses an inclusions file
 parseIncludes :: FilePath -> IO (Either ParseError (Map String FilePath))

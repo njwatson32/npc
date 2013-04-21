@@ -1,6 +1,8 @@
 #ifndef __BYTE_BUFFER_HEADER__
 #define __BYTE_BUFFER_HEADER__
 
+#include <cstdlib>
+#include <ctime>
 #include <string>
 #include <vector>
 
@@ -33,6 +35,8 @@ public:
   void SerializeFloat(float x);
   void SerializeDouble(double x);
   void SerializeLongDouble(long double x);
+  void SerializeTime_t(time_t x);
+  void SerializeSize_t(size_t x);
   void SerializeString(const std::string &str);
 
   // Must be called if any Serialize methods have been called
@@ -48,6 +52,8 @@ public:
   float DeserializeFloat();
   double DeserializeDouble();
   long double DeserializeLongDouble();
+  time_t DeserializeTime_t();
+  size_t DeserializeSize_t();
   std::string DeserializeString();
 };
 

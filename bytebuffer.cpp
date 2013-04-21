@@ -1,4 +1,7 @@
 #include "bytebuffer.h"
+
+#include <cstdlib>
+#include <ctime>
 #include <string>
 #include <vector>
 
@@ -85,6 +88,14 @@ void ByteBuffer::SerializeLongDouble(long double x) {
   SERIALIZE(long double, x);
 }
 
+void ByteBuffer::SerializeTime_t(time_t x) {
+  SERIALIZE(time_t, x);
+}
+
+void ByteBuffer::SerializeSize_t(size_t x) {
+  SERIALIZE(size_t, x);
+}
+
 void ByteBuffer::SerializeString(const std::string &str) {
   for (std::string::const_iterator i = str.begin();
        i != str.end(); ++i)
@@ -132,6 +143,16 @@ double ByteBuffer::DeserializeDouble() {
 
 long double ByteBuffer::DeserializeLongDouble() {
   DESERIALIZE(long double, x);
+  return x;
+}
+
+time_t ByteBuffer::DeserializeTime_t() {
+  DESERIALIZE(time_t, x);
+  return x;
+}
+
+size_t ByteBuffer::DeserializeSize_t() {
+  DESERIALIZE(size_t, x);
   return x;
 }
 

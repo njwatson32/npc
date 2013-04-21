@@ -46,6 +46,8 @@ has m (Vector t) = S.insert "<vector>" (has m t)
 has m (List t) = S.insert "<list>" (has m t)
 has m (Map k v) = S.insert "<map>" (S.union (has m k) (has m v))
 has m (User t) = S.singleton ('\"' : m M.! t ++ "\"")
+has _ (Prim "time_t") = S.singleton "<ctime>"
+has _ (Prim "size_t") = S.singleton "<cstdlib>"
 has _ (Prim _) = S.empty
 
 -- | Determines what files need to be included for a set of packets
@@ -169,10 +171,13 @@ packetClass = [
   "class Packet {",
   "protected:",
   "  PacketType type;",
-  "  unsigned long seqNum;",
-  "  Packet(PacketType t) : type(t) { }\n",
+  "  unsigned long seqNum;\n",
+  "public:",
+  "  Packet(PacketType t) : type(t) { }",
+  "  virtual ~Packet() { }\n",
   "public:",
   "  PacketType GetPacketType() const { return type; }",
+  "  std::string TypeString() const;",
   "  unsigned long SeqNum() const { return seqNum; }",
   "  void SetSeqNum(unsigned long s) { seqNum = s; }\n",
   "  virtual unsigned int SerializedSize() const {",
@@ -187,7 +192,7 @@ packetClass = [
   "  static Packet *DeserializePacket(ByteBuffer &b);",
   "};\n"
   ]
-              
+
 -- | Write a deserialize case for a packet
 writePacketCase :: Bool -> Packet -> CppWriter
 writePacketCase b (Packet n _) = do
@@ -204,10 +209,20 @@ writePacketCase b (Packet n _) = do
 writePacketImpl :: [String] -> [Packet] -> CppWriter
 writePacketImpl fnames ps = do
   tellLn (autoComment "packet.cpp")
+  tellLn "#include <string>"
   tellLn "#include \"packet.h\""
   tellLn "#include \"bytebuffer.h\""
   forM_ fnames (\fn -> tellLn ("#include \"" ++ fn ++ ".h\""))
-  tellLn "\nPacket *Packet::DeserializePacket(ByteBuffer &b) {"
+  tellLn "\nstd::string Packet::TypeString() const {"
+  tellLn "  switch(type) {"
+  forM_ ps (\(Packet n _) -> do
+               tellLn ("  case " ++ constantCase n ++ ":")
+               tellLn ("    return \"" ++ constantCase n ++ "\";"))
+  tellLn "  default:"
+  tellLn "    return \"<invalid>\";"
+  tellLn "  }"
+  tellLn "}\n"
+  tellLn "Packet *Packet::DeserializePacket(ByteBuffer &b) {"
   tellLn "  PacketType type = static_cast<PacketType>(b.DeserializeInt());"
   case ps of
     [] -> return ()
@@ -215,7 +230,7 @@ writePacketImpl fnames ps = do
       writePacketCase True p
       forM_ ps (writePacketCase False)
   tellLn "  return NULL;"
-  tellLn "}"  
+  tellLn "}"
               
 -- | Writes the main header file, including the Packet class and enum of
 --   packet types
@@ -224,6 +239,7 @@ writeMainHeader ps = do
   tellLn (autoComment "packet.h")
   tellLn "#ifndef __PACKET_HEADER__"
   tellLn "#define __PACKET_HEADER__\n"
+  tellLn "#include <string>"
   tellLn "#include \"bytebuffer.h\"\n"
   tellLn "enum PacketType {"
   forM_ ps (\p -> do
