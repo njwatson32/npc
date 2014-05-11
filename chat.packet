@@ -16,4 +16,5 @@ packet ChatResponse {
   string name;
   map<string, vector<int> > stuff;
   size_t size;
+  list<pair<int, string> > pairs;
 }

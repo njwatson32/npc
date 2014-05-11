@@ -42,6 +42,7 @@ capitalize (c:cs) = toUpper c : cs
 -- | Determines what files need to be included for a type
 has :: Map String FilePath -> CType -> Set String
 has _ CString = S.singleton "<string>"
+has m (Pair t1 t2) = S.insert "<utility>" (S.union (has m t1) (has m t2))
 has m (Vector t) = S.insert "<vector>" (has m t)
 has m (List t) = S.insert "<list>" (has m t)
 has m (Map k v) = S.insert "<map>" (S.union (has m k) (has m v))
@@ -251,15 +252,38 @@ writeMainHeader ps = do
   tell "#endif // __PACKET_HEADER__"
   
 {---------- Serialization Methods (.cpp) ----------}
+  
+-- | The code to find the size of a serialized pair
+serSizePair :: CType -> CType -> String -> String -> String
+serSizePair (Prim t1) (Prim t2) _ ws =
+  ws ++ "__size += sizeof(" ++ t1 ++ ") + sizeof(" ++ t2 ++ ");"
+serSizePair (Prim t1) t2 n ws =
+  ws ++ "__size += sizeof(" ++ t1 ++ ");\n" ++
+  ws ++ ccType t2 ++ tmp2 ++ " = " ++ n ++ ".second;\n" ++
+  serializedSize (Field t2 tmp2) ws
+  where tmp2 = "tmp2_" ++ n
+serSizePair t1 (Prim t2) n ws =
+  ws ++ ccType t1 ++ tmp1 ++ " = " ++ n ++ ".first;\n" ++
+  serializedSize (Field t1 tmp1) ws ++ "\n" ++
+  ws ++ "__size += sizeof(" ++ t2 ++ ");"
+  where tmp1 = "tmp1_" ++ n
+serSizePair t1 t2 n ws =
+  ws ++ ccType t1 ++ tmp1 ++ " = " ++ n ++ ".first;\n" ++
+  serializedSize (Field t1 tmp1) ws ++ "\n" ++
+  ws ++ ccType t2 ++ tmp2 ++ " = " ++ n ++ ".second;\n" ++
+  serializedSize (Field t2 tmp2) ws
+  where
+    tmp1 = "tmp1_" ++ n
+    tmp2 = "tmp2_" ++ n
       
--- | The code to find the size of a serialized vector
+-- | The code to find the size of a serialized vector or list
 serSizeList :: String -> CType -> String -> String -> String
 serSizeList _ (Prim t) n ws =
   ws ++ "__size += sizeof(unsigned int);\n" ++
   ws ++ "__size += " ++ n ++ ".size() * sizeof(" ++ t ++ ");"
 serSizeList c t n ws =
   ws ++ "__size += sizeof(unsigned int);\n" ++
-  ws ++ "for (std::" ++ c ++ "<" ++ show t ++ wsTemp t ++
+  ws ++ "for (std::" ++ c ++ "<" ++ show t ++ wsGeneric t ++
   ">::const_iterator " ++ it ++ " = " ++ n ++ ".begin(); " ++ it ++ " != " ++
   n ++ ".end(); " ++ "++" ++ it ++ ") {\n" ++
   ws2 ++ ccType t ++ tmp ++ " = *" ++ it ++ ";\n" ++
@@ -278,7 +302,7 @@ serSizeMap (Prim k) (Prim v) n ws =
 serSizeMap k v n ws =
   ws ++ "__size += sizeof(unsigned int);\n" ++
   sizeT k ++ sizeT v ++
-  ws ++ "for (std::map<" ++ show k ++ ", " ++ show v ++ wsTemp v ++
+  ws ++ "for (std::map<" ++ show k ++ ", " ++ show v ++ wsGeneric v ++
   ">::const_iterator " ++ it ++ " = " ++ n ++ ".begin(); " ++
   it ++ " != " ++ n ++ ".end(); ++" ++ it ++ ") {\n" ++
   (if isPrim k then "" else
@@ -303,11 +327,22 @@ serMethod d s = "b." ++ m ++ concat (map capitalize (words t))
     t = if isPrefixOf "unsigned " s then drop 9 s else s
     m = if d then "Deserialize" else "Serialize"
 
--- | The code to serialize a vector
+-- | The code to serialize a pair
+serPair :: CType -> CType -> String -> String -> String
+serPair t1 t2 n ws =
+  ws ++ ccType t1 ++ tmp1 ++ " = " ++ n ++ ".first;\n" ++
+  ws ++ ccType t2 ++ tmp2 ++ " = " ++ n ++ ".second;\n" ++
+  serialize (Field t1 tmp1) ws ++ "\n" ++
+  serialize (Field t2 tmp2) ws
+  where
+    tmp1 = "tmp1_" ++ n
+    tmp2 = "tmp2_" ++ n
+
+-- | The code to serialize a vector or list
 serList :: String -> CType -> String -> String -> String
 serList c t n ws =
   ws ++ "b.SerializeInt(" ++ n ++ ".size());\n" ++
-  ws ++ "for (std::" ++ c ++ "<" ++ show t ++ wsTemp t ++
+  ws ++ "for (std::" ++ c ++ "<" ++ show t ++ wsGeneric t ++
   ">::const_iterator " ++ it ++ " = " ++ n ++ ".begin(); " ++ it ++ " != " ++
   n ++ ".end(); ++" ++ it ++ ") {\n" ++ ws2 ++ ccType t ++ tmp ++ " = *" ++
   it ++ ";\n" ++ serialize (Field t tmp) ws2 ++ "\n" ++ ws ++ "}"
@@ -320,7 +355,7 @@ serList c t n ws =
 serMap :: CType -> CType -> String -> String -> String
 serMap k v n ws =
   ws ++ "b.SerializeInt(" ++ n ++ ".size());\n" ++
-  ws ++ "for (std::map<" ++ show k ++ ", " ++ show v ++ wsTemp v ++
+  ws ++ "for (std::map<" ++ show k ++ ", " ++ show v ++ wsGeneric v ++
   ">::const_iterator " ++ it ++ " = " ++ n ++ ".begin(); " ++
   it ++ " != " ++ n ++ ".end(); ++" ++ it ++ ") {\n" ++
   ws2 ++ ccType k ++ tmpk ++ " = " ++ it ++ "->first;\n" ++
@@ -332,8 +367,21 @@ serMap k v n ws =
     it = n ++ "it"
     tmpk = "tmpk_" ++ n
     tmpv = "tmpv_" ++ n
+    
+-- | The code to deserialize a pair
+deserPair :: CType -> CType -> String -> String -> String
+deserPair t1 t2 n ws =
+  ws ++ show t1 ++ ' ' : tmp1 ++ ";\n" ++
+  deserialize (Field t1 tmp1) ws ++ "\n" ++
+  ws ++ show t2 ++ ' ' : tmp2 ++ ";\n" ++
+  deserialize (Field t2 tmp2) ws ++ "\n" ++
+  ws ++ n ++ ".first = " ++ tmp1 ++ ";\n" ++
+  ws ++ n ++ ".second = " ++ tmp2 ++ ";"
+  where
+    tmp1 = "tmp1_" ++ n
+    tmp2 = "tmp2_" ++ n
         
--- | The code to deserialize a vector
+-- | The code to deserialize a vector or list
 deserList :: CType -> String -> String -> String
 deserList t n ws =
   ws ++ "unsigned int " ++ size ++ " = b.DeserializeInt();\n" ++
@@ -372,6 +420,7 @@ serializedSize (Field CString n) ws = ws ++ "__size += " ++ n ++ ".size() + 1;"
 serializedSize (Field (User _) n) ws = ws ++ "__size += " ++ n ++
                                        ".SerializedSize();"
 serializedSize (Field (Prim t) _) ws = ws ++ "__size += sizeof(" ++ t ++ ");"
+serializedSize (Field (Pair t1 t2) n) ws = serSizePair t1 t2 n ws
 serializedSize (Field (Vector t) n) ws = serSizeList "vector" t n ws
 serializedSize (Field (List t) n) ws = serSizeList "list" t n ws
 serializedSize (Field (Map k v) n) ws = serSizeMap k v n ws
@@ -383,6 +432,7 @@ serialize (Field CString n) ws = ws ++ serMethod False "string" ++
 serialize (Field (User _) n) ws = ws ++ n ++ ".Serialize(b);"
 serialize (Field (Prim t) n) ws = ws ++ serMethod False t ++
                                    '(' : n ++ ");"
+serialize (Field (Pair t1 t2) n) ws = serPair t1 t2 n ws
 serialize (Field (Vector t) n) ws = serList "vector" t n ws
 serialize (Field (List t) n) ws = serList "list" t n ws
 serialize (Field (Map k v) n) ws = serMap k v n ws
@@ -394,6 +444,7 @@ deserialize (Field CString n) ws = ws ++ n ++ " = " ++
 deserialize (Field (User _) n) ws = ws ++ n ++ ".Deserialize(b);"
 deserialize (Field (Prim t) n) ws = ws ++ n ++ " = " ++
                                      serMethod True t ++ "();"
+deserialize (Field (Pair t1 t2) n) ws = deserPair t1 t2 n ws
 deserialize (Field (Vector t) n) ws = deserList t n ws
 deserialize (Field (List t) n) ws = deserList t n ws
 deserialize (Field (Map k v) n) ws = deserMap k v n ws
